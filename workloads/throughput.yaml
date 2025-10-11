@@ -1,0 +1,7 @@
+# Closed-loop saturation test: fixed shapes, no think time. Used for naive vs batched.
+name: throughput
+stream: true
+seed: 42
+wait_time: {min: 0.0, max: 0.0}
+prompt_tokens: 64
+max_new_tokens: 64

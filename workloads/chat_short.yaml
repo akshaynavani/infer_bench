@@ -1,0 +1,7 @@
+# Interactive chat: short prompts, short streamed answers, light think time.
+name: chat-short
+stream: true
+seed: 7
+wait_time: {min: 0.0, max: 0.5}
+prompt_tokens: {dist: lognormal, mean: 96, sigma: 0.6, min: 8, max: 1024}
+max_new_tokens: {dist: uniform, min: 32, max: 128}

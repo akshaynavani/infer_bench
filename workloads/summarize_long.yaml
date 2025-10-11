@@ -1,0 +1,7 @@
+# Summarisation: long prompts, medium non-streamed outputs.
+name: summarize-long
+stream: false
+seed: 11
+wait_time: {min: 0.0, max: 0.0}
+prompt_tokens: {dist: normal, mean: 1500, std: 300, min: 512, max: 3000}
+max_new_tokens: {dist: fixed, value: 200}
