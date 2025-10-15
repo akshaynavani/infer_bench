@@ -64,7 +64,7 @@ class LLMMetricsCollector:
         self.reset()
 
     def reset(self) -> None:
-        with getattr(self, "_lock", threading.Lock()):
+        with self._lock:
             self.samples: list[RequestSample] = []
             self.errors = 0
             self.started_at: float | None = None
