@@ -122,7 +122,7 @@ def _on_test_stop(environment, **_kwargs) -> None:
 class LLMUser(HttpUser):
     """A closed-loop client issuing generation requests sampled from the workload."""
 
-    # Overridden per instance from the workload, see wait_time().
+    # Default target; --host on the command line takes precedence.
     host = os.getenv("INFER_BENCH_TARGET", "http://localhost:8000")
 
     def on_start(self) -> None:
