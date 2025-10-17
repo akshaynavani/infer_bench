@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: infer_server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["server:8000"]
+        labels: {service: server}
+      # A server started on the host with `infer-bench serve`
+      - targets: ["host.docker.internal:8000"]
+        labels: {service: server-host}
+
+  - job_name: loadgen
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["locust:9646"]
+        labels: {service: loadgen}
+      # Locust launched on the host via `infer-bench run`
+      - targets: ["host.docker.internal:9646"]
+        labels: {service: loadgen-host}
