@@ -1,0 +1,73 @@
+# Observability stack + reference server.
+#
+#   docker compose up -d                     # server, Prometheus, Grafana
+#   docker compose --profile loadgen up -d   # also a headless-capable Locust with web UI
+#
+# Grafana: http://localhost:3000 (admin / $GRAFANA_ADMIN_PASSWORD, default "admin")
+# Prometheus: http://localhost:9090   Locust UI: http://localhost:8089
+
+services:
+  server:
+    build: .
+    image: infer-bench:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      INFER_BENCH_MODE: ${INFER_BENCH_MODE:-batched}
+    ports:
+      - "8000:8000"
+    # py-spy needs ptrace to attach to the server process inside the container.
+    cap_add:
+      - SYS_PTRACE
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  locust:
+    image: infer-bench:latest
+    profiles: ["loadgen"]
+    depends_on:
+      server:
+        condition: service_healthy
+    command: >
+      locust -f /app/src/infer_bench/loadgen/locustfile.py
+      --host http://server:8000
+      --workload /app/workloads/${INFER_BENCH_WORKLOAD_NAME:-chat_short}.yaml
+      --prometheus-port 9646
+    ports:
+      - "8089:8089"
+      - "9646:9646"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/infer_bench.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  grafana-data:
