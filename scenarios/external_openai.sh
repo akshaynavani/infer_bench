@@ -23,5 +23,5 @@ for users in ${USER_STEPS:-1 8 32 64}; do
     --workload "${WORKLOAD:-workloads/chat_short.yaml}" \
     --users "$users" --spawn-rate "$users" --duration "${DURATION:-60}" \
     --label "${BACKEND}-u${users}" --results-root "${RESULTS:-results/external}" \
-    "${extra[@]}"
+    ${extra[@]+"${extra[@]}"}
 done

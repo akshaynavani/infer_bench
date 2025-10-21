@@ -29,7 +29,7 @@ for mode in naive batched; do
     --workload "$WORKLOAD" \
     --users "$USERS" --spawn-rate "$SPAWN_RATE" --duration "$DURATION" \
     --label "$mode" --results-root "$RESULTS" \
-    "${extra[@]}"
+    ${extra[@]+"${extra[@]}"}
 done
 
 naive_dir=$(ls -d "$RESULTS"/*_naive | tail -n 1)
