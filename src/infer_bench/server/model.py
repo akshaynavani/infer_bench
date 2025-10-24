@@ -36,11 +36,17 @@ def tokenize(text: str) -> list[str]:
 
 
 def _burn_cpu(duration_s: float) -> int:
-    """Spin on hashing for ``duration_s`` seconds while holding the GIL."""
-    deadline = time.perf_counter() + duration_s
+    """Spin on hashing until this thread has used ``duration_s`` seconds of CPU.
+
+    The budget is measured with ``time.thread_time()`` rather than wall-clock time, so a
+    thread that is waiting for the GIL does not count that wait towards its work. Under
+    contention the CPU-bound share of every request therefore serialises, which is the
+    behaviour real Python-heavy serving stacks show.
+    """
+    deadline = time.thread_time() + duration_s
     acc = 0
     payload = b"infer_bench"
-    while time.perf_counter() < deadline:
+    while time.thread_time() < deadline:
         payload = hashlib.blake2b(payload, digest_size=16).digest()
         acc ^= payload[0]
     return acc
