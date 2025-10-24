@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Benchmark artifacts (CSV, HTML reports, py-spy profiles)
+results/
+*.speedscope.json
+profile.svg
+profile.folded
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
