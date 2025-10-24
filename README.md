@@ -26,7 +26,8 @@ effect of an optimisation end to end:
 
 With the default cost model (8 ms overhead per step, 1 ms per sequence, half of it CPU-bound),
 `batched` should reach about 3x or more of `naive`'s output-token throughput at 32 concurrent
-users. Run `scenarios/naive_vs_batched.sh` to measure it on your machine.
+users. [Expected results](#expected-results-from-the-cost-model) shows where that number comes
+from. Run `scenarios/naive_vs_batched.sh` to measure it on your machine.
 
 ## Architecture
 
@@ -73,6 +74,31 @@ flowchart LR
 ```
 
 ### Run flow (`infer-bench run --spawn-server --profile`)
+
+```mermaid
+sequenceDiagram
+    participant U as Operator
+    participant C as infer-bench run
+    participant S as Reference server
+    participant P as py-spy
+    participant L as Locust (LLMUser)
+    participant R as results/run_id/
+
+    U->>C: run --spawn-server --mode naive --profile
+    C->>R: create run dir, write config.json
+    C->>S: spawn server, poll /health
+    C->>P: attach to server PID (non-blocking)
+    C->>L: start headless (users, spawn rate, duration)
+    loop until --duration elapses
+        L->>S: POST /v1/generate (prompt/output lengths sampled from workload YAML)
+        S-->>L: SSE tokens (each one timestamped for TTFT / ITL)
+        L->>L: record to Locust stats, LLM collector, exporter :9646
+    end
+    L->>R: llm_summary.json on test stop
+    P->>R: profile.svg, .speedscope.json, .folded
+    C->>R: summary.json (Locust CSV + LLM metrics + hotspots)
+    C-->>U: headline table
+```
 
 1. Create `results/<timestamp>_<label>/` and write `config.json`.
 2. Start the reference server (or use `--target` to point at one that is already running) and
@@ -189,6 +215,134 @@ locust -f src/infer_bench/loadgen/locustfile.py --host http://localhost:8000 \
 ```bash
 infer-bench profile --pid <server_pid> --duration 30 --out results/profile-adhoc
 ```
+
+## CLI reference
+
+```
+infer-bench serve     [--mode naive|batched] [--backend simulated|hf] [--host 0.0.0.0]
+                      [--port 8000] [--max-batch-size N] [--log-level warning]
+
+infer-bench run       [--target URL] [--backend native|openai|openai-chat] [--model NAME]
+                      [--workload workloads/throughput.yaml] [--users 32] [--spawn-rate 8]
+                      [--duration 60] [--label run] [--results-root results]
+                      [--spawn-server --mode naive|batched]
+                      [--profile] [--server-pid PID] [--pyspy-rate 100] [--sudo-pyspy]
+                      [--prometheus-port 9646]
+
+infer-bench profile   --pid PID [--duration 30] [--out results/profile] [--rate 100]
+                      [--sudo] [--native]
+
+infer-bench summarize RUN_DIR                       # rebuild summary.json for a run
+
+infer-bench compare   BASELINE_RUN CANDIDATE_RUN [--markdown report.md] [--json]
+```
+
+## Workloads
+
+Each workload YAML describes the traffic shape. Every simulated user samples the prompt and
+output lengths from these distributions, using a fixed seed so runs are reproducible.
+
+| Workload | Prompt tokens | Output tokens | Streaming | Think time | Use it for |
+|---|---|---|---|---|---|
+| `chat_short.yaml` | lognormal, mean 96 (8–1024) | uniform 32–128 | yes | 0–0.5 s | Interactive chat, where TTFT and ITL matter |
+| `summarize_long.yaml` | normal, mean 1500 ± 300 (512–3000) | fixed 200 | no | none | Prefill-heavy traffic and end-to-end latency |
+| `throughput.yaml` | fixed 64 | fixed 64 | yes | none | Closed-loop saturation, used by `naive_vs_batched.sh` |
+
+## Expected results from the cost model
+
+These numbers are **worked out from the default cost model, not measured**. Use them as a
+sanity check for your own `naive_vs_batched.sh` run.
+
+With the defaults (`step_overhead_ms=8`, `per_seq_cost_ms=1`, `cpu_bound_fraction=0.5`),
+`throughput.yaml` and 32 users:
+
+| | `naive` | `batched` |
+|---|---|---|
+| Cost of one decode step | 8 + 1 = 9 ms for 1 sequence | 8 + 32 × 1 = 40 ms for 32 sequences |
+| Part of that step that holds the GIL | 4.5 ms | 20 ms, on the single batcher thread |
+| Output tokens/s ceiling | ~220 (one 4.5 ms CPU slice per token, serialised by the GIL across threadpool workers) | ~800 (32 tokens every 40 ms) |
+| Inter-token latency per stream | grows with users, roughly 32 × 4.5 ms ≈ 145 ms at saturation | about one step, ~40 ms |
+
+That puts the ceiling ratio at about 3.6x, which is where the "about 3x or more" above comes
+from. The measured ratio is usually somewhat lower because of HTTP, SSE and Locust overhead,
+and because naive mode also pays prefill once per request instead of once per batch. Raise
+`cpu_bound_fraction` and the gap widens, since naive mode gets more GIL-bound. Lower it and
+the gap shrinks, since sleeping threads overlap.
+
+## Interpreting results
+
+| Metric | What it tells you |
+|---|---|
+| **TTFT** (time to first token) | Queueing plus prefill. This is what makes a chat UI feel slow to start. |
+| **ITL** (inter-token latency) | Decode cadence for each stream. In batched mode it tracks the decode step time. |
+| **Per-request decode tok/s** | How fast a single user's answer streams in (roughly 1 / ITL). |
+| **Output tokens/s** | Aggregate capacity of the server, which is the number to compare between modes. |
+| **p50 vs p99** | The typical request vs the tail. A p99 far above p50 points to contention or queueing. |
+
+A healthy run shows output tokens/s rising with users until the batch fills (`max_batch_size`),
+with ITL staying close to the decode step time. An unhealthy run shows throughput flattening
+while users keep rising, and ITL and TTFT climbing with every added user. Those are the signs
+of a serialised bottleneck.
+
+## Bottleneck guide
+
+| Symptom | Where to see it | Likely cause | What to try |
+|---|---|---|---|
+| Throughput flat as users rise, ITL grows linearly with users | `summary.json`, Grafana *Client inter-token latency* | GIL-bound per-request loops (`naive` mode) | Batch decode steps (`batched` mode) |
+| `_burn_cpu` / `spend` dominate self time across many threads | py-spy hotspot table, flamegraph | CPU-bound Python work contending on the GIL | Batch the work, or move it out of the interpreter |
+| Batch size stays well below `max_batch_size` under load | Grafana *Batching* | Arrivals too sparse to fill a batch inside `batch_wait_ms` | Raise `batch_wait_ms` slightly, or add users |
+| Queue depth keeps climbing, TTFT p99 spikes | Grafana *Queueing*, *Time to first token* | Offered load above capacity | Lower users, raise `max_batch_size`, or scale out |
+| 503 responses, `rejected` in the request counter | Grafana *Client error rate*, server `/metrics` | Request queue full (`max_queue_size`) | Back off the load or raise the queue limit |
+| Decode step time grows with batch size | Grafana *Decode step time* | Per-sequence cost dominates the fixed step overhead | Expected past the knee: batching has stopped paying off |
+
+## Example compare output
+
+`infer-bench compare` prints a colour-coded table to the terminal (Metric, Baseline, Candidate,
+Ratio, Change), and `--markdown report.md` writes the layout below. The numbers here are
+**illustrative**. They're estimated from the default cost model for `throughput.yaml` at
+32 users, rounded down a little for HTTP and Locust overhead, and they are not from a recorded
+run. Your hardware will move them, so run `scenarios/naive_vs_batched.sh` for real figures.
+
+```
+## 20251023-1912_naive -> 20251023-1915_batched
+
+| Metric                         | Baseline | Candidate | Change                 |
+|--------------------------------|---------:|----------:|-----------------------:|
+| Requests/s                     |      3.2 |      10.9 | 3.41x / +240.6% (better) |
+| Output tokens/s                |    205.0 |     698.0 | 3.40x / +240.5% (better) |
+| Per-request decode tok/s (p50) |      6.6 |      23.1 | 3.50x / +250.0% (better) |
+| Latency p50 (ms)               |  9,850.0 |   2,890.0 | 0.29x / -70.7% (better)  |
+| Latency p99 (ms)               | 11,400.0 |   3,420.0 | 0.30x / -70.0% (better)  |
+| TTFT p50 (ms)                  |    330.0 |     172.0 | 0.52x / -47.9% (better)  |
+| TTFT p99 (ms)                  |    610.0 |     265.0 | 0.43x / -56.6% (better)  |
+| Inter-token p50 (ms)           |    148.0 |      41.5 | 0.28x / -72.0% (better)  |
+| Error rate                     |    0.000 |     0.000 | n/a                    |
+```
+
+How to read it:
+
+- **Throughput rises about 3.4x.** That's a little under the 3.6x ceiling from the cost model,
+  because naive mode still overlaps the sleeping half of each step and both modes pay HTTP and
+  SSE overhead.
+- **Inter-token latency falls to roughly one decode step**, about 40 ms, which is the batched
+  step cost for 32 sequences. In naive mode it is roughly 32 × 4.5 ms of CPU queued behind the GIL.
+- **TTFT improves least.** In batched mode new requests still wait for the next admission window
+  and a prefill of the whole cohort.
+- **With `--profile`**, a hotspot table follows, listing the functions whose share of self
+  time moved the most. Expect `_burn_cpu` to dominate both runs, with naive mode also showing
+  more time in threadpool and lock handoff frames.
+
+## Grafana dashboard
+
+The provisioned **infer_bench — LLM inference under load** dashboard has:
+
+- **Stat row:** server req/s, server output tok/s, client TTFT p99, client error rate
+- **Request throughput:** server req/s by serving mode, and client req/s by status
+- **Token throughput:** server generated and prompt tok/s, alongside client-observed output tok/s
+- **End-to-end latency** and **Time to first token:** p50 and p99, server-side next to client-side
+- **Batching:** mean and p90 batch size
+- **Queueing:** queue depth, requests in flight, active sequences and active Locust users
+- **Decode step time** (p50/p99) and **Client inter-token latency** (p50/p99)
 
 ## How to test
 
